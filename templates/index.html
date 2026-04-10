@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DAT.co mNAV Dashboard</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 40px;
+            background-color: #f7f7f7;
+            color: #222;
+        }
+
+        h1 {
+            margin-bottom: 10px;
+        }
+
+        .subtext {
+            margin-bottom: 20px;
+            color: #555;
+        }
+
+        .controls {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            margin-bottom: 25px;
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
+            align-items: end;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        select, button {
+            padding: 10px 12px;
+            border-radius: 8px;
+            border: 1px solid #ccc;
+            font-size: 14px;
+        }
+
+        button {
+            background-color: #222;
+            color: white;
+            cursor: pointer;
+            border: none;
+        }
+
+        button:hover {
+            background-color: #444;
+        }
+
+        .cards {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+        }
+
+        .card {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            min-width: 190px;
+        }
+
+        .card h3 {
+            margin: 0 0 10px 0;
+            font-size: 18px;
+        }
+
+        .card p {
+            margin: 0;
+            font-size: 18px;
+            font-weight: bold;
+        }
+
+        .chart {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            margin-bottom: 30px;
+        }
+    </style>
+</head>
+<body>
+    <h1>DAT.co mNAV Dashboard</h1>
+    <p class="subtext">
+        Selected Company: <strong>{{ company_name }} ({{ company_ticker }})</strong>
+    </p>
+
+    <form method="GET" action="/" class="controls">
+        <div class="control-group">
+            <label for="company">Choose Company</label>
+            <select name="company" id="company">
+                {% for key, item in companies.items() %}
+                    <option value="{{ key }}" {% if key == selected_company_key %}selected{% endif %}>
+                        {{ item.name }} ({{ item.ticker }})
+                    </option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="control-group">
+            <label for="range">Choose Time Range</label>
+            <select name="range" id="range">
+                {% for key, value in range_options.items() %}
+                    <option value="{{ key }}" {% if key == selected_range_key %}selected{% endif %}>
+                        Last {{ value }} Days
+                    </option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="control-group">
+            <button type="submit">Update Dashboard</button>
+        </div>
+    </form>
+
+    <div class="cards">
+        <div class="card">
+            <h3>Latest mNAV</h3>
+            <p>{{ latest_mnav }}</p>
+        </div>
+
+        <div class="card">
+            <h3>Latest Stock Price</h3>
+            <p>{{ latest_stock }} {{ latest_stock_currency }}</p>
+        </div>
+
+        <div class="card">
+            <h3>Latest BTC Daily Price</h3>
+            <p>${{ latest_btc_daily }}</p>
+        </div>
+
+        <div class="card">
+            <h3>Latest BTC Live Price</h3>
+            <p>
+                {% if latest_btc_live == "N/A" %}
+                    N/A
+                {% else %}
+                    ${{ latest_btc_live }}
+                {% endif %}
+            </p>
+        </div>
+
+        <div class="card">
+            <h3>Market Cap (USD)</h3>
+            <p>${{ latest_market_cap_usd }}</p>
+        </div>
+
+        <div class="card">
+            <h3>BTC Holdings</h3>
+            <p>{{ btc_holdings }} BTC</p>
+        </div>
+    </div>
+
+    <div class="chart">
+        {{ chart_mnav_html|safe }}
+    </div>
+
+    <div class="chart">
+        {{ chart_btc_html|safe }}
+    </div>
+</body>
+</html>
