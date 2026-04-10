@@ -9,7 +9,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
-ALPHAVANTAGE_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY")
 
 CACHE_DIR = "cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -18,7 +17,6 @@ BTC_CACHE_FILE = os.path.join(CACHE_DIR, "btc_history_365.csv")
 
 BTC_CACHE_EXPIRE = 60 * 60          # 1 hour
 STOCK_CACHE_EXPIRE = 60 * 60        # 1 hour
-META_CACHE_EXPIRE = 60 * 60         # 1 hour
 BTC_LIVE_CACHE_EXPIRE = 60 * 5      # 5 minutes
 
 
@@ -28,6 +26,14 @@ def is_cache_valid(file_path, expire_seconds):
     modified_time = os.path.getmtime(file_path)
     age = time.time() - modified_time
     return age < expire_seconds
+
+
+def get_coingecko_headers():
+    if not COINGECKO_API_KEY:
+        raise ValueError("COINGECKO_API_KEY is missing")
+    return {
+        "x-cg-demo-api-key": COINGECKO_API_KEY
+    }
 
 
 def get_btc_history(days=180):
@@ -116,88 +122,10 @@ def get_btc_live_price():
                 return float(f.read().strip())
         return None
 
-def get_coingecko_headers():
-    if not COINGECKO_API_KEY:
-        raise ValueError("COINGECKO_API_KEY is missing in .env")
-
-    return {
-        "x-cg-demo-api-key": COINGECKO_API_KEY
-    }
-
-def get_alpha_vantage_shares_outstanding(ticker):
-    """
-    用 Alpha Vantage 抓 shares outstanding
-    先讀快取，沒快取或過期才打 API
-    """
-    if not ALPHAVANTAGE_API_KEY:
-        raise ValueError("ALPHAVANTAGE_API_KEY is missing in .env")
-
-    cache_file = os.path.join(CACHE_DIR, f"shares_outstanding_{ticker}.json")
-    cache_expire = 60 * 60 * 24  # 24 小時
-
-    # 1. 先讀有效快取
-    if is_cache_valid(cache_file, cache_expire):
-        with open(cache_file, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return float(data["shares_outstanding"])
-
-    url = "https://www.alphavantage.co/query"
-    params = {
-        "function": "SHARES_OUTSTANDING",
-        "symbol": ticker,
-        "apikey": ALPHAVANTAGE_API_KEY
-    }
-
-    try:
-        response = requests.get(url, params=params, timeout=20)
-        response.raise_for_status()
-        data = response.json()
-
-        shares_outstanding = None
-
-        # 情況 1：舊格式
-        if "shares_outstanding" in data:
-            shares_outstanding = float(data["shares_outstanding"])
-
-        # 情況 2：你現在拿到的新格式
-        elif data.get("status") == "success" and "data" in data and len(data["data"]) > 0:
-            latest_row = data["data"][0]
-
-            if latest_row.get("shares_outstanding_diluted"):
-                shares_outstanding = float(latest_row["shares_outstanding_diluted"])
-            elif latest_row.get("shares_outstanding_basic"):
-                shares_outstanding = float(latest_row["shares_outstanding_basic"])
-
-        # 情況 3：限流或其他提示，但有舊快取就用舊快取
-        if shares_outstanding is None:
-            if os.path.exists(cache_file):
-                with open(cache_file, "r", encoding="utf-8") as f:
-                    cached_data = json.load(f)
-                    return float(cached_data["shares_outstanding"])
-
-            raise ValueError(f"Invalid Alpha Vantage response for {ticker}: {data}")
-
-        # 存快取
-        with open(cache_file, "w", encoding="utf-8") as f:
-            json.dump({"shares_outstanding": shares_outstanding}, f)
-
-        return shares_outstanding
-
-    except Exception:
-        # request 失敗時，有舊快取就用舊快取
-        if os.path.exists(cache_file):
-            with open(cache_file, "r", encoding="utf-8") as f:
-                cached_data = json.load(f)
-                return float(cached_data["shares_outstanding"])
-        raise
 
 def get_entity_id_for_ticker(ticker):
-    """
-    用 CoinGecko /entities/list 動態找 entity_id
-    先查快取，沒有或過期才打 API
-    """
     entity_cache_file = os.path.join(CACHE_DIR, "coingecko_entities.json")
-    entity_cache_expire = 60 * 60 * 24  # 24 小時
+    entity_cache_expire = 60 * 60 * 24  # 24 hours
 
     entities = None
 
@@ -235,29 +163,22 @@ def get_entity_id_for_ticker(ticker):
     if not entities:
         raise ValueError("CoinGecko entities list is empty.")
 
-    # 先把你的 ticker 轉成比較容易對比的格式
     normalized_ticker = ticker.upper()
-
-    # 特判幾個常見代號格式
     ticker_aliases = {normalized_ticker}
+
     if normalized_ticker == "MSTR":
         ticker_aliases.update(["MSTR.US"])
     elif normalized_ticker == "MARA":
         ticker_aliases.update(["MARA.US"])
-    elif normalized_ticker == "3350.T":
-        ticker_aliases.update(["3350.JP", "3350.T", "3350"])
 
-    # 先比 symbol
     for entity in entities:
         symbol = str(entity.get("symbol", "")).upper()
         if symbol in ticker_aliases:
             return entity["id"]
 
-    # 再比 name 關鍵字
     ticker_name_map = {
         "MSTR": ["strategy", "microstrategy"],
-        "MARA": ["mara holdings", "mara"],
-        "3350.T": ["metaplanet"]
+        "MARA": ["mara holdings", "mara"]
     }
 
     for keyword in ticker_name_map.get(normalized_ticker, []):
@@ -270,19 +191,17 @@ def get_entity_id_for_ticker(ticker):
 
 
 def get_btc_holdings(ticker):
-    """
-    用 CoinGecko Public Treasury API 抓公司 BTC holdings
-    有快取就先用，失敗則 fallback 快取
-    """
     entity_id = get_entity_id_for_ticker(ticker)
     holdings_cache_file = os.path.join(CACHE_DIR, f"btc_holdings_{entity_id}.json")
-    holdings_cache_expire = 60 * 60  # 1 小時
+    holdings_cache_expire = 60 * 60  # 1 hour
 
     data = None
+    source = None
 
     if is_cache_valid(holdings_cache_file, holdings_cache_expire):
         with open(holdings_cache_file, "r", encoding="utf-8") as f:
             data = json.load(f)
+        source = "Cache"
     else:
         url = f"https://api.coingecko.com/api/v3/public_treasury/{entity_id}"
 
@@ -298,10 +217,13 @@ def get_btc_holdings(ticker):
             with open(holdings_cache_file, "w", encoding="utf-8") as f:
                 json.dump(data, f)
 
+            source = "Live API"
+
         except requests.exceptions.RequestException:
             if os.path.exists(holdings_cache_file):
                 with open(holdings_cache_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                source = "Cache"
             else:
                 raise ValueError(f"Failed to fetch BTC holdings for entity {entity_id} and no cache exists.")
 
@@ -310,20 +232,16 @@ def get_btc_holdings(ticker):
 
     for item in data["holdings"]:
         if item.get("coin_id") == "bitcoin":
-            return float(item.get("amount", 0))
+            return float(item.get("amount", 0)), source
 
     raise ValueError(f"No bitcoin holding found for ticker: {ticker}")
 
+
 def get_btc_holdings_history(ticker, days=365):
-    """
-    抓公司歷史 BTC holdings。
-    這個是給圖表算 mNAV 用的，不是給上面卡片用的。
-    """
     entity_id = get_entity_id_for_ticker(ticker)
     cache_file = os.path.join(CACHE_DIR, f"btc_holdings_history_{entity_id}_{days}.csv")
-    cache_expire = 60 * 60  # 1 小時
+    cache_expire = 60 * 60  # 1 hour
 
-    # 先讀快取
     if is_cache_valid(cache_file, cache_expire):
         df = pd.read_csv(cache_file)
         df["date"] = pd.to_datetime(df["date"]).dt.date
@@ -362,7 +280,8 @@ def get_btc_holdings_history(ticker, days=365):
             return df
         else:
             raise ValueError(f"Failed to fetch historical BTC holdings for {ticker} and no cache exists.")
-        
+
+
 def _get_jpy_usd_history(days=365):
     fx_cache_file = os.path.join(CACHE_DIR, "usd_jpy_365.csv")
 
@@ -399,66 +318,20 @@ def _get_jpy_usd_history(days=365):
             raise ValueError("FX data unavailable and no cache exists.")
 
 
-def get_stock_meta(ticker):
-    """
-    動態抓股票 metadata（shares outstanding / currency）
-    並做快取
-    """
-    meta_cache_file = os.path.join(CACHE_DIR, f"meta_{ticker}.json")
+def get_local_shares_outstanding(ticker):
+    local_file = "shares_outstanding_data.json"
 
-    if is_cache_valid(meta_cache_file, META_CACHE_EXPIRE):
-        with open(meta_cache_file, "r", encoding="utf-8") as f:
-            return json.load(f)
+    if os.path.exists(local_file):
+        with open(local_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
 
-    try:
-        stock = yf.Ticker(ticker)
+        if ticker in data:
+            return float(data[ticker])
 
-        # 優先抓 fast_info，通常比較輕
-        fast_info = stock.fast_info if stock.fast_info else {}
-        info = stock.info if stock.info else {}
-
-        currency = info.get("currency", "USD")
-
-        shares_outstanding = (
-            info.get("sharesOutstanding")
-            or info.get("impliedSharesOutstanding")
-        )
-
-        if shares_outstanding is None:
-            market_cap = fast_info.get("market_cap") or info.get("marketCap")
-            last_price = fast_info.get("last_price")
-
-            if market_cap and last_price:
-                shares_outstanding = market_cap / last_price
-
-        if shares_outstanding is None:
-            raise ValueError(f"Cannot determine shares outstanding for {ticker}")
-
-        meta = {
-            "currency": currency,
-            "shares_outstanding": shares_outstanding
-        }
-
-        with open(meta_cache_file, "w", encoding="utf-8") as f:
-            json.dump(meta, f)
-
-        return meta
-
-    except Exception:
-        if os.path.exists(meta_cache_file):
-            with open(meta_cache_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        else:
-            raise ValueError(f"Failed to fetch metadata for {ticker} and no cache exists.")
+    raise ValueError(f"No local shares_outstanding data for {ticker}")
 
 
 def get_stock_history(ticker="MSTR", days=180, shares_outstanding=None, currency="USD"):
-    """
-    股票歷史價格：
-    - 有有效快取就直接讀
-    - 沒有或過期才抓 yfinance history
-    - 不再抓 stock.info / metadata
-    """
     cache_file = os.path.join(CACHE_DIR, f"stock_{ticker}_365.csv")
 
     if is_cache_valid(cache_file, STOCK_CACHE_EXPIRE):

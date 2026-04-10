@@ -7,13 +7,12 @@ from data_fetcher import (
     get_btc_live_price,
     get_btc_holdings,
     get_btc_holdings_history,
-    get_alpha_vantage_shares_outstanding
+    get_local_shares_outstanding
 )
 from calculator import calculate_mnav
 
 app = Flask(__name__)
 
-# 你之後可以手動更新 holdings
 COMPANIES = {
     "MSTR": {
         "name": "Strategy",
@@ -58,7 +57,7 @@ def index():
     btc_df = get_btc_history(days)
     btc_live_price = get_btc_live_price()
 
-    shares_outstanding = get_alpha_vantage_shares_outstanding(selected_company["ticker"])
+    shares_outstanding = get_local_shares_outstanding(selected_company["ticker"])
 
     stock_df, latest_market_cap_usd, currency = get_stock_history(
         ticker=selected_company["ticker"],
@@ -67,7 +66,7 @@ def index():
         currency=selected_company["currency"]
     )
 
-    current_btc_holdings = get_btc_holdings(selected_company["ticker"])
+    current_btc_holdings, btc_holdings_source = get_btc_holdings(selected_company["ticker"])
     holdings_history_df = get_btc_holdings_history(selected_company["ticker"], days)
 
     df = calculate_mnav(
@@ -78,7 +77,6 @@ def index():
 
     latest = df.iloc[-1]
 
-    # 圖 1：mNAV
     fig_mnav = px.line(
         df,
         x="date",
@@ -93,7 +91,6 @@ def index():
     )
     chart_mnav_html = fig_mnav.to_html(full_html=False)
 
-    # 圖 2：BTC Price
     fig_btc = px.line(
         df,
         x="date",
@@ -123,6 +120,7 @@ def index():
         latest_btc_live=round(btc_live_price, 2) if btc_live_price is not None else "N/A",
         latest_market_cap_usd=format_large_number(latest_market_cap_usd),
         btc_holdings=format_large_number(current_btc_holdings),
+        btc_holdings_source=btc_holdings_source,
         chart_mnav_html=chart_mnav_html,
         chart_btc_html=chart_btc_html
     )
