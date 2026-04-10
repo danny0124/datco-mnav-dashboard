@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
+ALPHAVANTAGE_API_KEY = os.getenv("ALPHAVANTAGE_API_KEY")
 
 CACHE_DIR = "cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -123,6 +124,72 @@ def get_coingecko_headers():
         "x-cg-demo-api-key": COINGECKO_API_KEY
     }
 
+def get_alpha_vantage_shares_outstanding(ticker):
+    """
+    用 Alpha Vantage 抓 shares outstanding
+    先讀快取，沒快取或過期才打 API
+    """
+    if not ALPHAVANTAGE_API_KEY:
+        raise ValueError("ALPHAVANTAGE_API_KEY is missing in .env")
+
+    cache_file = os.path.join(CACHE_DIR, f"shares_outstanding_{ticker}.json")
+    cache_expire = 60 * 60 * 24  # 24 小時
+
+    # 1. 先讀有效快取
+    if is_cache_valid(cache_file, cache_expire):
+        with open(cache_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return float(data["shares_outstanding"])
+
+    url = "https://www.alphavantage.co/query"
+    params = {
+        "function": "SHARES_OUTSTANDING",
+        "symbol": ticker,
+        "apikey": ALPHAVANTAGE_API_KEY
+    }
+
+    try:
+        response = requests.get(url, params=params, timeout=20)
+        response.raise_for_status()
+        data = response.json()
+
+        shares_outstanding = None
+
+        # 情況 1：舊格式
+        if "shares_outstanding" in data:
+            shares_outstanding = float(data["shares_outstanding"])
+
+        # 情況 2：你現在拿到的新格式
+        elif data.get("status") == "success" and "data" in data and len(data["data"]) > 0:
+            latest_row = data["data"][0]
+
+            if latest_row.get("shares_outstanding_diluted"):
+                shares_outstanding = float(latest_row["shares_outstanding_diluted"])
+            elif latest_row.get("shares_outstanding_basic"):
+                shares_outstanding = float(latest_row["shares_outstanding_basic"])
+
+        # 情況 3：限流或其他提示，但有舊快取就用舊快取
+        if shares_outstanding is None:
+            if os.path.exists(cache_file):
+                with open(cache_file, "r", encoding="utf-8") as f:
+                    cached_data = json.load(f)
+                    return float(cached_data["shares_outstanding"])
+
+            raise ValueError(f"Invalid Alpha Vantage response for {ticker}: {data}")
+
+        # 存快取
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump({"shares_outstanding": shares_outstanding}, f)
+
+        return shares_outstanding
+
+    except Exception:
+        # request 失敗時，有舊快取就用舊快取
+        if os.path.exists(cache_file):
+            with open(cache_file, "r", encoding="utf-8") as f:
+                cached_data = json.load(f)
+                return float(cached_data["shares_outstanding"])
+        raise
 
 def get_entity_id_for_ticker(ticker):
     """
@@ -385,10 +452,12 @@ def get_stock_meta(ticker):
             raise ValueError(f"Failed to fetch metadata for {ticker} and no cache exists.")
 
 
-def get_stock_history(ticker="MSTR", days=180):
+def get_stock_history(ticker="MSTR", days=180, shares_outstanding=None, currency="USD"):
     """
-    動態抓 stock history + 動態抓 metadata
-    兩者都做快取
+    股票歷史價格：
+    - 有有效快取就直接讀
+    - 沒有或過期才抓 yfinance history
+    - 不再抓 stock.info / metadata
     """
     cache_file = os.path.join(CACHE_DIR, f"stock_{ticker}_365.csv")
 
@@ -423,9 +492,8 @@ def get_stock_history(ticker="MSTR", days=180):
             else:
                 raise ValueError(f"Failed to fetch stock history for {ticker} and no cache exists.")
 
-    meta = get_stock_meta(ticker)
-    currency = meta["currency"]
-    shares_outstanding = meta["shares_outstanding"]
+    if shares_outstanding is None:
+        raise ValueError(f"{ticker} missing shares_outstanding")
 
     hist["market_cap_local"] = hist["stock_close_local"] * shares_outstanding
     hist["market_cap_usd"] = hist["market_cap_local"]

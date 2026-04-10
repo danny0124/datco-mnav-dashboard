@@ -6,7 +6,8 @@ from data_fetcher import (
     get_stock_history,
     get_btc_live_price,
     get_btc_holdings,
-    get_btc_holdings_history
+    get_btc_holdings_history,
+    get_alpha_vantage_shares_outstanding
 )
 from calculator import calculate_mnav
 
@@ -16,15 +17,13 @@ app = Flask(__name__)
 COMPANIES = {
     "MSTR": {
         "name": "Strategy",
-        "ticker": "MSTR"
+        "ticker": "MSTR",
+        "currency": "USD"
     },
     "MARA": {
         "name": "MARA Holdings",
-        "ticker": "MARA"
-    },
-    "METAPLANET": {
-        "name": "Metaplanet",
-        "ticker": "3350.T"
+        "ticker": "MARA",
+        "currency": "USD"
     }
 }
 
@@ -58,9 +57,14 @@ def index():
 
     btc_df = get_btc_history(days)
     btc_live_price = get_btc_live_price()
+
+    shares_outstanding = get_alpha_vantage_shares_outstanding(selected_company["ticker"])
+
     stock_df, latest_market_cap_usd, currency = get_stock_history(
         ticker=selected_company["ticker"],
-        days=days
+        days=days,
+        shares_outstanding=shares_outstanding,
+        currency=selected_company["currency"]
     )
 
     current_btc_holdings = get_btc_holdings(selected_company["ticker"])
