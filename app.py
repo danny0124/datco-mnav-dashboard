@@ -1,7 +1,13 @@
 from flask import Flask, render_template, request
 import plotly.express as px
 
-from data_fetcher import get_btc_history, get_stock_history, get_btc_live_price
+from data_fetcher import (
+    get_btc_history,
+    get_stock_history,
+    get_btc_live_price,
+    get_btc_holdings,
+    get_btc_holdings_history
+)
 from calculator import calculate_mnav
 
 app = Flask(__name__)
@@ -10,18 +16,15 @@ app = Flask(__name__)
 COMPANIES = {
     "MSTR": {
         "name": "Strategy",
-        "ticker": "MSTR",
-        "btc_holdings": 766970
+        "ticker": "MSTR"
     },
     "MARA": {
         "name": "MARA Holdings",
-        "ticker": "MARA",
-        "btc_holdings": 38689
+        "ticker": "MARA"
     },
     "METAPLANET": {
         "name": "Metaplanet",
-        "ticker": "3350.T",
-        "btc_holdings": 40177
+        "ticker": "3350.T"
     }
 }
 
@@ -60,10 +63,13 @@ def index():
         days=days
     )
 
+    current_btc_holdings = get_btc_holdings(selected_company["ticker"])
+    holdings_history_df = get_btc_holdings_history(selected_company["ticker"], days)
+
     df = calculate_mnav(
         stock_df=stock_df,
         btc_df=btc_df,
-        btc_holdings=selected_company["btc_holdings"]
+        holdings_history_df=holdings_history_df
     )
 
     latest = df.iloc[-1]
@@ -112,7 +118,7 @@ def index():
         latest_btc_daily=round(latest["btc_price_usd"], 2),
         latest_btc_live=round(btc_live_price, 2) if btc_live_price is not None else "N/A",
         latest_market_cap_usd=format_large_number(latest_market_cap_usd),
-        btc_holdings=format_large_number(selected_company["btc_holdings"]),
+        btc_holdings=format_large_number(current_btc_holdings),
         chart_mnav_html=chart_mnav_html,
         chart_btc_html=chart_btc_html
     )

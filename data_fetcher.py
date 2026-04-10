@@ -5,6 +5,10 @@ import requests
 import pandas as pd
 import yfinance as yf
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
+
+load_dotenv()
+COINGECKO_API_KEY = os.getenv("COINGECKO_API_KEY")
 
 CACHE_DIR = "cache"
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -49,7 +53,12 @@ def _get_btc_history_365():
         return btc_df
 
     try:
-        response = requests.get(url, params=params, timeout=20)
+        response = requests.get(
+            url,
+            params=params,
+            headers=get_coingecko_headers(),
+            timeout=20
+        )
         response.raise_for_status()
 
         data = response.json()
@@ -85,7 +94,12 @@ def get_btc_live_price():
     }
 
     try:
-        response = requests.get(url, params=params, timeout=20)
+        response = requests.get(
+            url,
+            params=params,
+            headers=get_coingecko_headers(),
+            timeout=20
+        )
         response.raise_for_status()
         data = response.json()
         price = data["bitcoin"]["usd"]
@@ -101,7 +115,187 @@ def get_btc_live_price():
                 return float(f.read().strip())
         return None
 
+def get_coingecko_headers():
+    if not COINGECKO_API_KEY:
+        raise ValueError("COINGECKO_API_KEY is missing in .env")
 
+    return {
+        "x-cg-demo-api-key": COINGECKO_API_KEY
+    }
+
+
+def get_entity_id_for_ticker(ticker):
+    """
+    用 CoinGecko /entities/list 動態找 entity_id
+    先查快取，沒有或過期才打 API
+    """
+    entity_cache_file = os.path.join(CACHE_DIR, "coingecko_entities.json")
+    entity_cache_expire = 60 * 60 * 24  # 24 小時
+
+    entities = None
+
+    if is_cache_valid(entity_cache_file, entity_cache_expire):
+        with open(entity_cache_file, "r", encoding="utf-8") as f:
+            entities = json.load(f)
+    else:
+        url = "https://api.coingecko.com/api/v3/entities/list"
+        params = {
+            "entity_type": "company",
+            "per_page": 250,
+            "page": 1
+        }
+
+        try:
+            response = requests.get(
+                url,
+                params=params,
+                headers=get_coingecko_headers(),
+                timeout=20
+            )
+            response.raise_for_status()
+            entities = response.json()
+
+            with open(entity_cache_file, "w", encoding="utf-8") as f:
+                json.dump(entities, f)
+
+        except requests.exceptions.RequestException:
+            if os.path.exists(entity_cache_file):
+                with open(entity_cache_file, "r", encoding="utf-8") as f:
+                    entities = json.load(f)
+            else:
+                raise ValueError("Failed to fetch CoinGecko entities list and no cache exists.")
+
+    if not entities:
+        raise ValueError("CoinGecko entities list is empty.")
+
+    # 先把你的 ticker 轉成比較容易對比的格式
+    normalized_ticker = ticker.upper()
+
+    # 特判幾個常見代號格式
+    ticker_aliases = {normalized_ticker}
+    if normalized_ticker == "MSTR":
+        ticker_aliases.update(["MSTR.US"])
+    elif normalized_ticker == "MARA":
+        ticker_aliases.update(["MARA.US"])
+    elif normalized_ticker == "3350.T":
+        ticker_aliases.update(["3350.JP", "3350.T", "3350"])
+
+    # 先比 symbol
+    for entity in entities:
+        symbol = str(entity.get("symbol", "")).upper()
+        if symbol in ticker_aliases:
+            return entity["id"]
+
+    # 再比 name 關鍵字
+    ticker_name_map = {
+        "MSTR": ["strategy", "microstrategy"],
+        "MARA": ["mara holdings", "mara"],
+        "3350.T": ["metaplanet"]
+    }
+
+    for keyword in ticker_name_map.get(normalized_ticker, []):
+        for entity in entities:
+            name = str(entity.get("name", "")).lower()
+            if keyword in name:
+                return entity["id"]
+
+    raise ValueError(f"Cannot find CoinGecko entity_id for ticker: {ticker}")
+
+
+def get_btc_holdings(ticker):
+    """
+    用 CoinGecko Public Treasury API 抓公司 BTC holdings
+    有快取就先用，失敗則 fallback 快取
+    """
+    entity_id = get_entity_id_for_ticker(ticker)
+    holdings_cache_file = os.path.join(CACHE_DIR, f"btc_holdings_{entity_id}.json")
+    holdings_cache_expire = 60 * 60  # 1 小時
+
+    data = None
+
+    if is_cache_valid(holdings_cache_file, holdings_cache_expire):
+        with open(holdings_cache_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    else:
+        url = f"https://api.coingecko.com/api/v3/public_treasury/{entity_id}"
+
+        try:
+            response = requests.get(
+                url,
+                headers=get_coingecko_headers(),
+                timeout=20
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            with open(holdings_cache_file, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+
+        except requests.exceptions.RequestException:
+            if os.path.exists(holdings_cache_file):
+                with open(holdings_cache_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            else:
+                raise ValueError(f"Failed to fetch BTC holdings for entity {entity_id} and no cache exists.")
+
+    if not data or "holdings" not in data:
+        raise ValueError(f"Invalid treasury response for ticker: {ticker}")
+
+    for item in data["holdings"]:
+        if item.get("coin_id") == "bitcoin":
+            return float(item.get("amount", 0))
+
+    raise ValueError(f"No bitcoin holding found for ticker: {ticker}")
+
+def get_btc_holdings_history(ticker, days=365):
+    """
+    抓公司歷史 BTC holdings。
+    這個是給圖表算 mNAV 用的，不是給上面卡片用的。
+    """
+    entity_id = get_entity_id_for_ticker(ticker)
+    cache_file = os.path.join(CACHE_DIR, f"btc_holdings_history_{entity_id}_{days}.csv")
+    cache_expire = 60 * 60  # 1 小時
+
+    # 先讀快取
+    if is_cache_valid(cache_file, cache_expire):
+        df = pd.read_csv(cache_file)
+        df["date"] = pd.to_datetime(df["date"]).dt.date
+        return df
+
+    url = f"https://api.coingecko.com/api/v3/public_treasury/{entity_id}/bitcoin/holding_chart"
+    params = {
+        "days": days,
+        "include_empty_intervals": "true"
+    }
+
+    try:
+        response = requests.get(
+            url,
+            params=params,
+            headers=get_coingecko_headers(),
+            timeout=20
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        if "holdings" not in data:
+            raise ValueError(f"Invalid holding_chart response for {ticker}")
+
+        df = pd.DataFrame(data["holdings"], columns=["timestamp", "btc_holdings"])
+        df["date"] = pd.to_datetime(df["timestamp"], unit="ms").dt.date
+        df = df[["date", "btc_holdings"]].drop_duplicates(subset=["date"])
+
+        df.to_csv(cache_file, index=False)
+        return df
+
+    except requests.exceptions.RequestException:
+        if os.path.exists(cache_file):
+            df = pd.read_csv(cache_file)
+            df["date"] = pd.to_datetime(df["date"]).dt.date
+            return df
+        else:
+            raise ValueError(f"Failed to fetch historical BTC holdings for {ticker} and no cache exists.")
+        
 def _get_jpy_usd_history(days=365):
     fx_cache_file = os.path.join(CACHE_DIR, "usd_jpy_365.csv")
 
